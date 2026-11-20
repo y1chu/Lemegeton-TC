@@ -12,7 +12,8 @@ namespace Lemegeton.Core
     internal class GameNetwork : IDisposable
     {
 
-        public delegate void OnNetworkMessageDelegate(nint dataPtr, ushort opCode, uint sourceActorId, uint targetActorId, NetworkMessageDirection direction);
+        public delegate void OnNetworkMessageDelegate(nint dataPtr, ushort opCode, uint sourceActorId, uint targetActorId,
+            NetworkMessageDirection direction, byte? obfuscationKey, int bodyLength);
 
         public event OnNetworkMessageDelegate? NetworkMessage;
 
@@ -22,7 +23,7 @@ namespace Lemegeton.Core
         {
             unsafe
             {
-                var onReceivePacketAddress = (nint)PacketDispatcher.StaticVirtualTablePointer->OnReceivePacket;                
+                var onReceivePacketAddress = (nint)PacketDispatcher.StaticVirtualTablePointer->OnReceivePacket;
                 processZonePacketDownHook = io.HookFromAddress<PacketDispatcher.Delegates.OnReceivePacket>(onReceivePacketAddress, this.ProcessZonePacketDownDetour);
                 processZonePacketDownHook.Enable();
             }
@@ -43,36 +44,46 @@ namespace Lemegeton.Core
             // Go back 0x10 to get back to the start of the packet header
             dataPtr -= 0x10;
 
-            foreach (var d in Delegate.EnumerateInvocationList(this.NetworkMessage))
+            int packetLength = Marshal.ReadInt32(dataPtr);
+            ushort opcode = (ushort)Marshal.ReadInt16(dataPtr, 0x12);
+            byte? key = TcPacketData.TryGetBaseKey(opcode, dispatcher->GameSessionRandom, dispatcher->LastPacketRandom,
+                dispatcher->Key0, dispatcher->Key1, dispatcher->Key2, out byte decodedKey) ? decodedKey : null;
+            var subscribers = NetworkMessage?.GetInvocationList();
+            if (packetLength >= 0x20 && packetLength <= 0x10000 && subscribers != null)
             {
-                try
+                foreach (OnNetworkMessageDelegate d in subscribers)
                 {
-                    d.Invoke(
-                        dataPtr + 0x20,
-                        (ushort)Marshal.ReadInt16(dataPtr, 0x12),
-                        0,
-                        targetId,
-                        NetworkMessageDirection.ZoneDown);
-                }
-                catch (Exception ex)
-                {
-                    string header;
                     try
                     {
-                        var data = new byte[32];
-                        Marshal.Copy(dataPtr, data, 0, 32);
-                        header = BitConverter.ToString(data);
+                        d.Invoke(
+                            dataPtr + 0x20,
+                            opcode,
+                            0,
+                            targetId,
+                            NetworkMessageDirection.ZoneDown,
+                            key,
+                            packetLength - 0x20);
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
-                        header = "failed";
-                    }
+                        string header;
+                        try
+                        {
+                            var data = new byte[32];
+                            Marshal.Copy(dataPtr, data, 0, 32);
+                            header = BitConverter.ToString(data);
+                        }
+                        catch (Exception)
+                        {
+                            header = "failed";
+                        }
 
-                    Log.Error(ex, "Exception on ProcessZonePacketDown hook. Header: " + header);
+                        Log.Error(ex, "Exception on ProcessZonePacketDown hook. Header: " + header);
+                    }
                 }
             }
 
-            this.processZonePacketDownHook.Original(dispatcher, targetId, dataPtr + 0x10);            
+            this.processZonePacketDownHook.Original(dispatcher, targetId, dataPtr + 0x10);
         }
 
     }

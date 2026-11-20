@@ -1,40 +1,52 @@
-## Lemegeton in a nutshell
+# Lemegeton TC
 
-Lemegeton is a Dalamud plugin which is geared to being your ultimate Final Fantasy XIV raiding and ingame companion. With a wide variety of helpful features for all kinds of content, you'll never want to queue into an instance or leave home without it! Lemegeton does not have triggers or callouts, but it's meant to complement the feature set of Triggernometry, Cactbot, et al with a variety of exciting features and functionality.
+[Lemegeton](https://github.com/paissaheavyindustries/Lemegeton) 的台服修改版，從原版 1.0.7.6 改來，有繁體中文介面。
 
-The plugin is nearly standalone and does not require ACT, Telesto, or anything else to operate aside from Dalamud, which you already have anyway because who isn't using Quicklauncher? It's very easy to set up and manage, and requires no configuration out of the box - aside from you simply turning on the things you want to use for yourself. While some features may be a little more questionable than others, you are not required to use or activate anything you wouldn't want to; if you don't use those features, there is no risk to you.
+目前對應台服 `2026.11.05.0000.0000`，需要台服 Dalamud API 13。
 
-Current features include but are not limited to:
+## 編譯
 
-- UWU / Weapon's Refrain: Titan jail automarker
-- DSR / Dragonsong's Reprise: Wroth Flames automarker
-- TOP / The Omega Protocol: P1 Program Loop automarker
-- TOP / The Omega Protocol: P1 Pantokrator automarker
-- TOP / The Omega Protocol: P3 Transition automarker
-- TOP / The Omega Protocol: P5 Delta/Sigma/Omega automarkers
-- TOP / The Omega Protocol: Draw tether, boss monitor, etc..
-- and so much more, not just automarkers - join the Discord!
+先裝好 .NET 9 SDK 和台服 Dalamud，再到這個專案的資料夾，用 PowerShell 執行：
 
-## Contribute
+```powershell
+./build-tc.ps1
+```
 
-Lemegeton also has a Wiki, containing useful information and documentation if you would like to read more about the project, or contribute to it:
+預設會編譯 Mini 版。需要 Full 版的額外功能時，改用：
 
-https://github.com/paissaheavyindustries/Lemegeton/wiki
+```powershell
+./build-tc.ps1 -Configuration 'Release (Full)'
+```
 
-Contributions are certainly welcome, and you can read more about how you can participate on the Discord!
+編好的壓縮檔會放在 `artifacts` 資料夾，檔名是 `Lemegeton-TC-mini.zip` 或 `Lemegeton-TC-full.zip`。
 
-## Installing
+編譯時會到 `%APPDATA%/FFXIVSimpleLauncher/Dalamud/Injector` 找 Dalamud。裝在別的地方時，用 `-DalamudLibPath` 指定路徑；也可以用 `-DotnetPath` 指定 `dotnet.exe` 的位置。
 
-The only thing Lemegeton needs is Dalamud, and that comes with the Quicklauncher you should already be using. If you're not, be sure to install it first and then never look back at the original launcher:
+## 裝進遊戲
 
-https://github.com/goatcorp/FFXIVQuickLauncher
+到 Dalamud 設定裡加入開發插件路徑，填入 `artifacts/tc-mini/Lemegeton.dll` 的完整路徑，再到插件列表啟用。Full 版則用 `artifacts/tc-full/Lemegeton.dll`。
 
-If you're all set up with Quicklauncher, head on over to my Dalamud repository and follow the instructions on how to add it to Dalamud:
+Mini 和 Full 選一個用，不要同時開。更新檔案後，要把插件關掉再開一次才會生效。
 
-https://github.com/paissaheavyindustries/Dalamud-Repo
+## 標記怎麼用
 
-## Discord
+預設只會顯示自己看得到的「本機標記」，不會更動遊戲裡全隊都看得到的標記。
 
-Lemegeton also has a publicly available Discord server for announcements, suggestions, and questions related to the plugin. Feel free to join at:
+可以先在聊天欄輸入這兩行，看看自己頭上有沒有出現標記：
 
-https://discord.gg/6f9MY55
+```text
+/lemmy drawing on
+/lemmy mark attack1 <me>
+```
+
+輸入 `/lemmy mark off <me>` 就能移除。測試前先收起「本機標記設定」，以免只看到預覽的標記。
+
+如果想讓全隊都看得到標記：
+
+1. 到「設定 → 危險區域」，看完提示後勾選確認。
+2. 輸入 `ALLOW SHARED MARKERS`，再按「停用強制本機標記保護」。
+3. 回到標記設定，取消勾選「使用本機標記」。
+
+想切回來時，按「重新啟用強制本機標記保護」就好。原本遊戲裡的標記不會被清掉。
+
+[原版說明](https://github.com/paissaheavyindustries/Lemegeton/wiki) · [MIT 授權](LICENSE)

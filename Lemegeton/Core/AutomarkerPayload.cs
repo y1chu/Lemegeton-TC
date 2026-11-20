@@ -7,7 +7,7 @@ namespace Lemegeton.Core
     internal class AutomarkerPayload
     {
 
-        private State _st;
+        private readonly State _st;
         public bool markSelfOnly { get; set; } = false;
         public bool softMarker { get; set; } = false;
 
@@ -17,19 +17,24 @@ namespace Lemegeton.Core
         {
             _st = st;
             markSelfOnly = selfOnly;
-            softMarker = (_st.cfg.AutomarkerSoft == true || soft == true);
+            softMarker = _st.cfg.UseSoftmarkers || soft;
         }
 
         public void Assign(AutomarkerSigns.SignEnum sign, Party.PartyMember pm)
         {
-            Assign(sign, pm.GameObject);
+            Assign(sign, pm?.GameObject);
         }
         
         public void Assign(AutomarkerSigns.SignEnum sign, IGameObject go)
         {
+            if (go == null)
+            {
+                return;
+            }
             if (markSelfOnly == true)
             {
-                if (go.GameObjectId != _st.cs.LocalPlayer.GameObjectId)
+                var localPlayer = _st.cs?.LocalPlayer;
+                if (localPlayer == null || go.GameObjectId != localPlayer.GameObjectId)
                 {
                     return;
                 }
@@ -40,11 +45,12 @@ namespace Lemegeton.Core
             }
             else
             {
-                if (assignments.ContainsKey(sign) == false)
+                if (!assignments.TryGetValue(sign, out var actors))
                 {
-                    assignments[sign] = new List<IGameObject>();
+                    actors = new List<IGameObject>();
+                    assignments[sign] = actors;
                 }
-                assignments[sign].Add(go);
+                actors.Add(go);
             }
         }
 

@@ -111,6 +111,25 @@ namespace Lemegeton.Core
             public object[] Params { get; set; }
             public DateTime FireAt { get; set; } = DateTime.MinValue;
             public uint ActorId { get; set; } = 0;
+            public bool IsSharedMarker { get; set; } = false;
+            private Config _sharedMarkerConfig;
+            private long _sharedMarkerRevision;
+
+            internal bool IsSharedMarkerAction => IsSharedMarker || Function is MarkingFunctionDelegate
+                || MarkerSafetyPolicy.IsSharedMarkerCommand(CommandText);
+
+            internal bool HasCurrentMarkerPermission(Config configuration) => !configuration.ForceSoftmarkers
+                && (_sharedMarkerConfig == null || (Object.ReferenceEquals(_sharedMarkerConfig, configuration)
+                    && _sharedMarkerRevision == configuration.SharedMarkerRevision));
+
+            internal void CaptureMarkerPermission(Config configuration)
+            {
+                if (_sharedMarkerConfig == null)
+                {
+                    _sharedMarkerConfig = configuration;
+                    _sharedMarkerRevision = configuration.SharedMarkerRevision;
+                }
+            }
 
             private unsafe void InvokeCommand()
             {
@@ -148,13 +167,23 @@ namespace Lemegeton.Core
             {
                 try
                 {
-                    if (Function != null)
+                    // Relocking and native dispatch must be atomic.
+                    lock (MarkerSafetyPolicy.Sync)
                     {
-                        Function.DynamicInvoke(Params);                        
-                    }
-                    else
-                    {
-                        InvokeCommand();
+                        Config configuration = State.cfg;
+                        if (IsSharedMarkerAction && !HasCurrentMarkerPermission(configuration))
+                        {
+                            State.Log(LogLevelEnum.Debug, null, "Shared marker invocation cancelled by local-only protection or changed permissions");
+                            return;
+                        }
+                        if (Function != null)
+                        {
+                            Function.DynamicInvoke(Params);
+                        }
+                        else
+                        {
+                            InvokeCommand();
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -209,7 +238,18 @@ namespace Lemegeton.Core
         internal string GameVersion { get; set; } = "(unknown)";
 
         internal Plugin plug;
-        internal Config cfg;
+        internal Config cfg { get; private set; }
+
+        internal void ApplyConfig(Config configuration, bool preserveProtection = false)
+        {
+            ArgumentNullException.ThrowIfNull(configuration);
+            lock (MarkerSafetyPolicy.Sync)
+            {
+                if (preserveProtection && cfg != null)
+                    configuration.ForceSoftmarkers = cfg.ForceSoftmarkers;
+                cfg = configuration;
+            }
+        }
         internal SigLocator _sig;
         internal NetworkDecoder _dec;
         internal Timeline _timeline = null;
@@ -1113,6 +1153,12 @@ namespace Lemegeton.Core
                 {
                     if (argsa.Count() > 1)
                     {
+                        if (cfg.ForceSoftmarkers && (String.Equals(argsa[1], "off", StringComparison.OrdinalIgnoreCase)
+                            || String.Equals(argsa[1], "toggle", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            cg.Print(I18n.Translate("Command/AutomarkerSoft/Locked"));
+                            return;
+                        }
                         if (String.Compare(argsa[1], "on", true) == 0)
                         {
                             cfg.AutomarkerSoft = true;
@@ -1144,17 +1190,20 @@ namespace Lemegeton.Core
                 gn.NetworkMessage -= _dec.NetworkMessageReceived;
                 _listening = false;
             }
+            _dec?.Reset();
             StatusGotOpcodes = false;
         }
 
-        internal bool PrepareInternals(bool fallback)
+        internal bool PrepareInternals()
         {
-            if (_dec.GetOpcodes(fallback) == true)
+            if (_dec.GetOpcodes() && _dec.SetOpcodeRegion(cfg.OpcodeRegion))
             {
                 StatusGotOpcodes = true;
-                _dec.SetOpcodeRegion(cfg.OpcodeRegion);
-                _listening = true;
-                gn.NetworkMessage += _dec.NetworkMessageReceived;
+                if (_listening == false)
+                {
+                    gn.NetworkMessage += _dec.NetworkMessageReceived;
+                    _listening = true;
+                }
                 GetSignatures();
                 return true;
             }            
@@ -1226,6 +1275,19 @@ namespace Lemegeton.Core
 
         internal void QueueInvocation(DeferredInvoke di)
         {
+            lock (MarkerSafetyPolicy.Sync)
+            {
+                Config configuration = cfg;
+                if (di.IsSharedMarkerAction)
+                {
+                    if (!di.HasCurrentMarkerPermission(configuration))
+                    {
+                        Log(LogLevelEnum.Debug, null, "Shared marker queue request blocked by local-only protection or changed permissions");
+                        return;
+                    }
+                    di.CaptureMarkerPermission(configuration);
+                }
+            }
             List<DeferredInvoke> queue = cfg.QueueFramework == true ? InvoqFramework : InvoqThread;
             AutoResetEvent ev = cfg.QueueFramework == true ? null : InvoqThreadNew;
             lock (queue)
@@ -1346,12 +1408,12 @@ namespace Lemegeton.Core
             {
                 return items;
             }
-            for (int i = 0; i < 35; i++)
+            var sheet = dm.Excel.GetSheet<Item>();
+            for (int i = 0; i < ic->Size; i++)
             {
                 FFXIVClientStructs.FFXIV.Client.Game.InventoryItem* ii = ic->GetInventorySlot(i);
-                if (ii != null)
+                if (ii != null && ii->ItemId != 0 && sheet.TryGetRow(ii->ItemId, out var item))
                 {
-                    var item = dm.Excel.GetSheet<Item>().GetRow(ii->ItemId);
                     if (item.ItemUICategory.RowId == 46)
                     {
                         items.Add(new InventoryItem() { Type = ic->Type, Slot = i, HQ = (ii->Flags & FFXIVClientStructs.FFXIV.Client.Game.InventoryItem.ItemFlags.HighQuality) != 0, Item = item });
@@ -1367,7 +1429,7 @@ namespace Lemegeton.Core
             {
                 return null;
             }
-            for (int i = 0; i < 35; i++)
+            for (int i = 0; i < ic->Size; i++)
             {
                 FFXIVClientStructs.FFXIV.Client.Game.InventoryItem* ii = ic->GetInventorySlot(i);
                 if (ii != null)
@@ -1383,7 +1445,10 @@ namespace Lemegeton.Core
                         )
                     )
                     {
-                        var item = dm.Excel.GetSheet<Item>().GetRow(ii->ItemId);
+                        if (!dm.Excel.GetSheet<Item>().TryGetRow(ii->ItemId, out var item))
+                        {
+                            return null;
+                        }
                         return new InventoryItem() { Type = ic->Type, Slot = i, HQ = isHq, Item = item };
                     }
                 }
@@ -1394,6 +1459,10 @@ namespace Lemegeton.Core
         internal unsafe InventoryItem FindItemInInventory(uint itemId, bool hq)
         {
             InventoryManager* im = InventoryManager.Instance();
+            if (im == null)
+            {
+                return null;
+            }
             InventoryItem ii;
             ii = FindItemInInventoryContainer(im->GetInventoryContainer(InventoryType.Inventory1), itemId, hq);
             if (ii != null)
@@ -1422,6 +1491,10 @@ namespace Lemegeton.Core
         {
             List<InventoryItem> items = new List<InventoryItem>();
             InventoryManager* im = InventoryManager.Instance();
+            if (im == null)
+            {
+                return items;
+            }
             items.AddRange(GetAllFoodInInventoryContainer(im->GetInventoryContainer(InventoryType.Inventory1)));
             items.AddRange(GetAllFoodInInventoryContainer(im->GetInventoryContainer(InventoryType.Inventory2)));
             items.AddRange(GetAllFoodInInventoryContainer(im->GetInventoryContainer(InventoryType.Inventory3)));
@@ -1447,7 +1520,12 @@ namespace Lemegeton.Core
 
         internal bool CurrentlyWellFed(float forAtLeast)
         {
-            StatusList sl = cs.LocalPlayer.StatusList;
+            var localPlayer = cs.LocalPlayer;
+            if (localPlayer == null)
+            {
+                return false;
+            }
+            StatusList sl = localPlayer.StatusList;
             for (int i = 0; i < sl.Length; i++)
             {
                 Status st = sl[i];
@@ -1689,6 +1767,7 @@ namespace Lemegeton.Core
 
         internal void ExecuteAutomarkers(AutomarkerPayload ap, AutomarkerTiming at)
         {
+            ap.softMarker = cfg.UseSoftmarkers || ap.softMarker;
             Task first = null, prev = null, tx = null;
             if (cfg.QuickToggleAutomarkers == false && ap.softMarker == false)
             {
@@ -1698,6 +1777,11 @@ namespace Lemegeton.Core
             if (cfg.QuickToggleOverlays == false && ap.softMarker == true)
             {
                 Log(LogLevelEnum.Debug, null, "Soft automarkers disabled");
+                return;
+            }
+            if (!GetPartyMembers().HasValidOrder)
+            {
+                Log(LogLevelEnum.Warning, null, "Cannot apply automarkers while party UI order is unavailable");
                 return;
             }
             Log(LogLevelEnum.Debug, null, "Executing automarker payload for {0} roles, self mark: {1}, soft: {2}", ap.assignments.Count, ap.markSelfOnly, ap.softMarker);
@@ -1826,24 +1910,56 @@ namespace Lemegeton.Core
 
         internal unsafe Party GetPartyMembers()
         {
-            Party pty = new Party();            
-            Dictionary<string, int> idx = new Dictionary<string, int>();
-            AgentHUD* ah = AgentHUD.Instance();            
-            for (int i = 0; i < ah->PartyMemberCount; i++)
+            Party pty = new Party();
+            var localPlayer = cs.LocalPlayer;
+            if (localPlayer == null)
             {
-                HudPartyMember pm = ah->PartyMembers[i];
-                string temp = pm.Name.ToString();
-                idx[temp] = pm.Index;
+                return pty;
             }
+
+            // Names can collide across worlds; match the HUD by entity/content ID.
+            Dictionary<uint, int> entityIndices = new Dictionary<uint, int>();
+            Dictionary<ulong, int> contentIndices = new Dictionary<ulong, int>();
+            AgentHUD* ah = AgentHUD.Instance();
+            if (ah != null && ah->PartyMemberCount > 0 && ah->PartyMemberCount <= ah->PartyMembers.Length)
+            {
+                for (int i = 0; i < ah->PartyMemberCount; i++)
+                {
+                    HudPartyMember member = ah->PartyMembers[i];
+                    if (member.Index >= 8)
+                    {
+                        continue;
+                    }
+                    int index = member.Index + 1;
+                    if (member.EntityId != 0 && member.EntityId != 0xE0000000)
+                    {
+                        // Repeated IDs are ambiguous rather than "last one wins".
+                        if (!entityIndices.TryAdd(member.EntityId, index))
+                        {
+                            entityIndices[member.EntityId] = 0;
+                        }
+                    }
+                    if (member.ContentId != 0 && !contentIndices.TryAdd(member.ContentId, index))
+                    {
+                        contentIndices[member.ContentId] = 0;
+                    }
+                }
+            }
+
             foreach (IPartyMember pm in pl)
             {
-                string name = pm.Name.ToString();
+                var gameObject = pm.GameObject ?? (pm.ObjectId == localPlayer.EntityId ? localPlayer : null);
+                uint entityId = gameObject?.EntityId ?? pm.ObjectId;
+                if (!entityIndices.TryGetValue(entityId, out int index) && pm.ContentId > 0)
+                {
+                    contentIndices.TryGetValue((ulong)pm.ContentId, out index);
+                }
                 pty.Members.Add(new Party.PartyMember()
                 {
-                    Index = idx.ContainsKey(name) == true ? idx[name] + 1 : 0,
-                    Name = pm.GameObject != null ? pm.GameObject.Name.ToString() : pm.Name.ToString(),
-                    ObjectId = pm.GameObject != null ? pm.GameObject.GameObjectId : pm.ObjectId,
-                    GameObject = pm.GameObject
+                    Index = index,
+                    Name = gameObject?.Name.ToString() ?? pm.Name.ToString(),
+                    ObjectId = gameObject?.GameObjectId ?? pm.ObjectId,
+                    GameObject = gameObject
                 });
             }
             if (pty.Members.Count == 0)
@@ -1851,9 +1967,9 @@ namespace Lemegeton.Core
                 pty.Members.Add(new Party.PartyMember()
                 {
                     Index = 1,
-                    Name = cs.LocalPlayer.Name.ToString(),
-                    ObjectId = cs.LocalPlayer.GameObjectId,
-                    GameObject = cs.LocalPlayer
+                    Name = localPlayer.Name.ToString(),
+                    ObjectId = localPlayer.GameObjectId,
+                    GameObject = localPlayer
                 });
             }
             return pty;
@@ -1865,17 +1981,10 @@ namespace Lemegeton.Core
             return al;
         }
 
-        internal unsafe int GetPartyMemberIndex(string name)
+        internal int GetPartyMemberIndex(uint entityId)
         {
             Party pty = GetPartyMembers();
-            foreach (Party.PartyMember pm in pty.Members)
-            {
-                if (String.Compare(pm.Name, name) == 0)
-                {
-                    return pm.Index;
-                }
-            }
-            return 0;
+            return pty.HasValidOrder ? pty.GetByActorId(entityId)?.Index ?? 0 : 0;
         }
 
         internal void AssignRandomSelections(Party pty, int numSelections)
@@ -1903,6 +2012,11 @@ namespace Lemegeton.Core
 
         internal void ClearMarkerOn(IGameObject go, bool hard, bool soft)
         {
+            if (cfg.ForceSoftmarkers)
+            {
+                hard = false;
+                soft = true;
+            }
             if (go == null)
             {
                 return;
@@ -1940,6 +2054,7 @@ namespace Lemegeton.Core
                             {
                                 State = this,
                                 Function = _markingFuncPtr,
+                                IsSharedMarker = true,
                                 Params = new object[] { _sigs["MarkingCtrl"], (byte)AutomarkerSigns.GetSignIndex(marker), (uint)go.GameObjectId }
                             };                            
                             QueueInvocation(di);
@@ -1965,7 +2080,7 @@ namespace Lemegeton.Core
             }
             if (_postCmdFuncptr != null)
             {
-                int index = GetPartyMemberIndex(go.Name.ToString());
+                int index = GetPartyMemberIndex(go.EntityId);
                 if (index > 0)
                 {
                     string cmd = "/mk off <" + index + ">";
@@ -1975,7 +2090,8 @@ namespace Lemegeton.Core
                         DeferredInvoke di = new DeferredInvoke()
                         {
                             State = this,
-                            CommandText = cmd
+                            CommandText = cmd,
+                            IsSharedMarker = true
                         };                        
                         QueueInvocation(di);
                     }
@@ -2015,6 +2131,7 @@ namespace Lemegeton.Core
 
         internal void PerformMarking(ulong run, IGameObject go, AutomarkerSigns.SignEnum sign, bool soft)
         {
+            soft = cfg.UseSoftmarkers || soft;
             if (go == null || (cfg.QuickToggleAutomarkers == false && soft == false) || (cfg.QuickToggleOverlays == false && soft == true))
             {
                 return;
@@ -2097,6 +2214,7 @@ namespace Lemegeton.Core
                         {
                             State = this,
                             Function = _markingFuncPtr,
+                            IsSharedMarker = true,
                             Params = new object[] { _sigs["MarkingCtrl"], (byte)AutomarkerSigns.GetSignIndex(sign), (uint)go.GameObjectId },
                             FireAt = cleared == true ? DateTime.Now.AddMilliseconds(750) : DateTime.Now
                         };
@@ -2131,7 +2249,7 @@ namespace Lemegeton.Core
                     case AutomarkerSigns.SignEnum.BindNext: cmd += "bind"; break;
                     case AutomarkerSigns.SignEnum.IgnoreNext: cmd += "ignore"; break;
                 }
-                int index = GetPartyMemberIndex(go.Name.ToString());
+                int index = GetPartyMemberIndex(go.EntityId);
                 if (index > 0)
                 {
                     Log(LogLevelEnum.Debug, null, "Using command to mark actor {0} in party spot {1} with {2}", go, index, sign);
@@ -2147,6 +2265,7 @@ namespace Lemegeton.Core
                         {
                             State = this,
                             CommandText = cmd,
+                            IsSharedMarker = true,
                             FireAt = cleared == true ? DateTime.Now.AddMilliseconds(750) : DateTime.Now
                         };
                         QueueInvocation(di);

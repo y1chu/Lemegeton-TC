@@ -1,29 +1,12 @@
-﻿using Dalamud.Game.Gui;
-using Dalamud.Game.Network;
-using FFXIVClientStructs.FFXIV.Client.Game;
-using FFXIVClientStructs.FFXIV.Client.Game.UI;
-using FFXIVClientStructs.FFXIV.Common.Lua;
+﻿using Dalamud.Game.Network;
 using Lemegeton.PacketHeaders;
-using Lumina.Excel;
-using Lumina.Excel.Sheets;
-using Newtonsoft.Json;
-using Serilog;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Formats.Asn1;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
 using System.Xml;
-using System.Xml.Linq;
-using static FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentMJIFarmManagement;
-using static Lemegeton.Content.UltOmegaProtocol;
-using static Lemegeton.Core.State;
-using static Lumina.Data.Parsing.Uld.UldRoot;
 
 namespace Lemegeton.Core
 {
@@ -167,10 +150,26 @@ namespace Lemegeton.Core
         internal State _st;
         internal StatusTracker _tracker;
 
-        private List<string> _opcodeRegions = null;
-        private Blueprint.Region _nextOpcodeRegion = null;
+        private List<string> _opcodeRegions = new List<string>();
         internal Blueprint.Region _currentOpcodeRegion = null;
         private Blueprint _blueprint = null;
+        private bool _warnedMissingKey;
+        private bool _warnedPacketSize;
+        private readonly object _profileLock = new object();
+
+        internal void Reset()
+        {
+            lock (_profileLock)
+            {
+                Opcodes = null;
+                _currentOpcodeRegion = null;
+                _st.StatusGotOpcodes = false;
+                lock (_tracker)
+                    _tracker.entries.Clear();
+                _warnedMissingKey = false;
+                _warnedPacketSize = false;
+            }
+        }
 
         public NetworkDecoder(State st)
         {
@@ -182,20 +181,12 @@ namespace Lemegeton.Core
 
         internal string GetOpcodeVersion()
         {
-            if (_currentOpcodeRegion == null)
-            {
-                return null;
-            }
-            return _currentOpcodeRegion.Version;
+            return _currentOpcodeRegion?.Version;
         }
 
         internal List<Blueprint.Region.Warning> GetOpcodeWarnings()
         {
-            if (_currentOpcodeRegion == null)
-            {
-                return null;
-            }
-            return _currentOpcodeRegion.Warnings;
+            return _currentOpcodeRegion?.Warnings;
         }
 
         internal ushort GetOpcodeForRegion(Blueprint.Region region, string id)
@@ -234,19 +225,6 @@ namespace Lemegeton.Core
                 Opcodes.ActorControl, Opcodes.ActorControlSelf, Opcodes.ActorControlTarget,
                 region.DebugFlags, region.DebugInstanceData
             );
-        }
-
-        internal static void SetOpcode(IDictionary<string, ushort> src, string name, out ushort opcode)
-        {
-            ushort temp;
-            if (src.TryGetValue(name, out temp) == true)
-            {
-                opcode = temp;
-            }
-            else
-            {
-                opcode = 0;
-            }
         }
 
         internal void DecodeActorControl(ActorControlCategory category, uint sourceActorId, uint targetActorId, uint param1, uint param2, uint param3, uint param4)
@@ -324,35 +302,35 @@ namespace Lemegeton.Core
             }
         }
 
-        internal unsafe void HandleStatusEffectList(StatusEffectListEntry* ae1, StatusEffectListEntry* ae2, uint targetActorId)
-        {            
+        internal unsafe void HandleStatusEffectList(StatusEffectListEntry* ae1, StatusEffectListEntry* ae2, uint targetActorId, byte seed)
+        {
             List<StatusTracker.Entry> entries = new List<StatusTracker.Entry>();
             List<string> temp = new List<string>();
-            ushort seed = ae1[29].statusId;
             temp.Add(string.Format("[{0}/{1:X}]", seed, targetActorId));
-            for (int i = 0; i < 30; i++)
-            {
-                temp.Add(string.Format("{0}={1}", i, ae1[i].statusId - seed));
-                if (ae1[i].statusId - seed > 0)
-                {
-                    entries.Add(
-                        new StatusTracker.Entry() { srcActorId = ae1[i].srcActorId, actorId = targetActorId, statusId = (uint)ae1[i].statusId - seed, duration = Math.Abs(ae1[i].duration), stacks = ae1[i].stacks }
-                    );
-                }
-            }
-            if (ae2 != null)
+
+            void ReadEffects(StatusEffectListEntry* effects)
             {
                 for (int i = 0; i < 30; i++)
                 {
-                    temp.Add(string.Format("{0}={1}", i, ae2[i].statusId - seed));
-                    if (ae2[i].statusId - seed > 0)
+                    ushort statusId = TcPacketData.DecodeStatusId(effects[i].statusId, seed);
+                    temp.Add(string.Format("{0}={1}", i, statusId));
+                    if (statusId > 0)
                     {
-                        entries.Add(
-                            new StatusTracker.Entry() { srcActorId = ae2[i].srcActorId, actorId = targetActorId, statusId = (uint)ae2[i].statusId - seed, duration = Math.Abs(ae2[i].duration), stacks = ae2[i].stacks }
-                        );
+                        entries.Add(new StatusTracker.Entry
+                        {
+                            srcActorId = effects[i].srcActorId,
+                            actorId = targetActorId,
+                            statusId = statusId,
+                            duration = Math.Abs(effects[i].duration),
+                            stacks = effects[i].stacks
+                        });
                     }
                 }
             }
+
+            ReadEffects(ae1);
+            if (ae2 != null)
+                ReadEffects(ae2);
             if ((_currentOpcodeRegion?.DebugFlags & Blueprint.DebugFlags.StatusEffects) != 0 && _currentOpcodeRegion.DebugInstances.Contains(_st._territoryCurrent))
             {
                 _st.Log(State.LogLevelEnum.Debug, null, "SEL: {0}", string.Join(", ", temp));
@@ -360,12 +338,42 @@ namespace Lemegeton.Core
             _tracker.ReplaceStatusForActor(targetActorId, entries.Count > 0 ? entries : null);
         }
 
-        internal unsafe void Decode(nint dataPtr, ushort opCode, uint sourceActorId, uint targetActorId)
+        internal unsafe void Decode(nint dataPtr, ushort opCode, uint sourceActorId, uint targetActorId, byte? key, int bodyLength)
         {
+            if (Opcodes == null || _currentOpcodeRegion == null || opCode == 0)
+                return;
+            int requiredLength = GetRequiredBodyLength(opCode);
+            if (requiredLength > bodyLength)
+            {
+                if (!_warnedPacketSize)
+                {
+                    _st.Log(State.LogLevelEnum.Warning, null, "TC packet {0} is shorter than expected ({1} < {2}); ignoring it.", opCode, bodyLength, requiredLength);
+                    _warnedPacketSize = true;
+                }
+                return;
+            }
+            bool needsKey = opCode == Opcodes.StatusEffectList || opCode == Opcodes.StatusEffectList3
+                || (opCode == Opcodes.ActorControl && Marshal.ReadInt16(dataPtr) == (short)ActorControlCategory.Headmarker)
+                || IsAbilityOpcode(opCode);
+            if (needsKey && key == null)
+            {
+                if (!_warnedMissingKey)
+                {
+                    _st.Log(State.LogLevelEnum.Warning, null, "TC packet keys are not initialized; ignoring obfuscated events until the dispatcher keys are ready.");
+                    _warnedMissingKey = true;
+                }
+                return;
+            }
             if ((_currentOpcodeRegion?.DebugFlags & Blueprint.DebugFlags.Opcodes) != 0 && _currentOpcodeRegion.DebugInstances.Contains(_st._territoryCurrent))
             {
                 _st.Log(State.LogLevelEnum.Debug, null, "Opcode: {0} / {1:X} (source: {2:X8}, target: {3:X8})", opCode, opCode, sourceActorId, targetActorId);
             }
+
+            ushort actionId = 0;
+            if (IsAbilityOpcode(opCode)
+                && !TcPacketData.TryDecodeActionId(unchecked((uint)Marshal.ReadInt32(dataPtr, 8)), key.Value, out actionId))
+                return;
+
             if (opCode == Opcodes.ActorCast)
             {                
                 ActorCast ac = Marshal.PtrToStructure<ActorCast>(dataPtr);
@@ -374,7 +382,9 @@ namespace Lemegeton.Core
             else if (opCode == Opcodes.ActorControl)
             {
                 ActorControl ac = Marshal.PtrToStructure<ActorControl>(dataPtr);
-                DecodeActorControl(ac.category, sourceActorId, targetActorId, ac.param1, ac.param2, ac.param3, ac.param4);
+                DecodeActorControl(ac.category, sourceActorId, targetActorId,
+                    ac.category == ActorControlCategory.Headmarker ? TcPacketData.DecodeHeadmarker(ac.param1, key.Value) : ac.param1,
+                    ac.param2, ac.param3, ac.param4);
             }
             else if (opCode == Opcodes.ActorControlSelf)
             {
@@ -389,14 +399,14 @@ namespace Lemegeton.Core
             else if (opCode == Opcodes.Ability1)
             {
                 Ability1 ac = Marshal.PtrToStructure<Ability1>(dataPtr);
-                _st.InvokeAction(targetActorId, (uint)ac.targetId[0], ac.actionId);
+                _st.InvokeAction(targetActorId, (uint)ac.targetId[0], actionId);
             }
             else if (opCode == Opcodes.Ability8)
             {
                 Ability8 ac = Marshal.PtrToStructure<Ability8>(dataPtr);
                 for (int i = 0; i < 8; i++)
                 {
-                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], ac.actionId);
+                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], actionId);
                 }
             }
             else if (opCode == Opcodes.Ability16)
@@ -404,7 +414,7 @@ namespace Lemegeton.Core
                 Ability16 ac = Marshal.PtrToStructure<Ability16>(dataPtr);
                 for (int i = 0; i < 16; i++)
                 {
-                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], ac.actionId);
+                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], actionId);
                 }
             }
             else if (opCode == Opcodes.Ability24)
@@ -412,7 +422,7 @@ namespace Lemegeton.Core
                 Ability24 ac = Marshal.PtrToStructure<Ability24>(dataPtr);
                 for (int i = 0; i < 24; i++)
                 {
-                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], ac.actionId);
+                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], actionId);
                 }
             }
             else if (opCode == Opcodes.Ability32)
@@ -420,12 +430,14 @@ namespace Lemegeton.Core
                 Ability32 ac = Marshal.PtrToStructure<Ability32>(dataPtr);
                 for (int i = 0; i < 32; i++)
                 {
-                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], ac.actionId);
+                    _st.InvokeAction(targetActorId, (uint)ac.targetId[i], actionId);
                 }
             }
             else if (opCode == Opcodes.EffectResult)
             {
                 EffectResult ac = Marshal.PtrToStructure<EffectResult>(dataPtr);
+                if (28 + ac.entryCount * 16 > bodyLength)
+                    return;
                 List<string> temp = new List<string>();
                 EffectResultEntry* ae = (EffectResultEntry * )(dataPtr + 28);
                 temp.Add(string.Format("[{0:X}]", targetActorId));
@@ -451,23 +463,19 @@ namespace Lemegeton.Core
             }
             else if (opCode == Opcodes.StatusEffectList)
             {
-                StatusEffectList ac = Marshal.PtrToStructure<StatusEffectList>(dataPtr);
-                HandleStatusEffectList((StatusEffectListEntry*)(dataPtr + 20), null, targetActorId);
+                HandleStatusEffectList((StatusEffectListEntry*)(dataPtr + 20), null, targetActorId, key.Value);
             }
             else if (opCode == Opcodes.StatusEffectList2)
             {
-                StatusEffectList2 ac = Marshal.PtrToStructure<StatusEffectList2>(dataPtr);
-                HandleStatusEffectList((StatusEffectListEntry*)(dataPtr + 24), null, targetActorId);
+                HandleStatusEffectList((StatusEffectListEntry*)(dataPtr + 24), null, targetActorId, 0);
             }
             else if (opCode == Opcodes.StatusEffectList3)
             {
-                StatusEffectList3 ac = Marshal.PtrToStructure<StatusEffectList3>(dataPtr);
-                HandleStatusEffectList((StatusEffectListEntry*)(dataPtr + 0), null, targetActorId);
+                HandleStatusEffectList((StatusEffectListEntry*)dataPtr, null, targetActorId, key.Value);
             }
             else if (opCode == Opcodes.BossStatusEffectList)
             {
-                StatusEffectList ac = Marshal.PtrToStructure<StatusEffectList>(dataPtr);
-                HandleStatusEffectList((StatusEffectListEntry*)(dataPtr + 0), (StatusEffectListEntry*)(dataPtr + 380), targetActorId);                
+                HandleStatusEffectList((StatusEffectListEntry*)dataPtr, (StatusEffectListEntry*)(dataPtr + 380), targetActorId, 0);
             }
             else if (opCode == Opcodes.MapEffect)
             {
@@ -490,146 +498,125 @@ namespace Lemegeton.Core
             }
         }
 
+        private bool IsAbilityOpcode(ushort opcode) => opcode == Opcodes.Ability1 || opcode == Opcodes.Ability8
+            || opcode == Opcodes.Ability16 || opcode == Opcodes.Ability24 || opcode == Opcodes.Ability32;
+
+        private int GetRequiredBodyLength(ushort opcode)
+        {
+            if (opcode == Opcodes.ActorCast) return Marshal.SizeOf<ActorCast>();
+            if (opcode == Opcodes.ActorControl) return Marshal.SizeOf<ActorControl>();
+            if (opcode == Opcodes.ActorControlSelf) return Marshal.SizeOf<ActorControlSelf>();
+            if (opcode == Opcodes.ActorControlTarget) return Marshal.SizeOf<ActorControlTarget>();
+            if (opcode == Opcodes.EffectResult) return 28;
+            if (opcode == Opcodes.StatusEffectList) return 380;
+            if (opcode == Opcodes.StatusEffectList2) return 384;
+            if (opcode == Opcodes.StatusEffectList3) return 360;
+            if (opcode == Opcodes.BossStatusEffectList) return 740;
+            if (opcode == Opcodes.Ability1) return 48 + 72;
+            if (opcode == Opcodes.Ability8) return 48 + 72 * 8;
+            if (opcode == Opcodes.Ability16) return 48 + 72 * 16;
+            if (opcode == Opcodes.Ability24) return 48 + 72 * 24;
+            if (opcode == Opcodes.Ability32) return 48 + 72 * 32;
+            if (opcode == Opcodes.MapEffect) return 11;
+            // EventPlay/64 are intentionally unavailable in the TC profile.
+            return 0;
+        }
+
         internal IEnumerable<string> GetOpcodeRegions()
         {
-            return _opcodeRegions;
+            lock (_profileLock)
+                return _opcodeRegions.ToArray();
         }
 
         internal Blueprint GetBlueprintFromURI(string uri)
         {
             try
             {
-                XmlDocument doc;
-                Uri u = new Uri(uri);
-                if (u.IsFile == true)
-                {
-                    doc = new XmlDocument();
-                    doc.Load(uri);
-                }
-                else
-                {
-                    using HttpClient http = new HttpClient();
-                    using HttpRequestMessage req = new HttpRequestMessage()
-                    {
-                        Method = HttpMethod.Get,
-                        RequestUri = u
-                    };
-                    using HttpResponseMessage resp = http.Send(req);
-                    if (resp.StatusCode != System.Net.HttpStatusCode.OK)
-                    {
-                        _st.Log(State.LogLevelEnum.Error, null, "Couldn't load blueprint from {0}, response code was: {1}", uri, resp.StatusCode);
-                        return null;
-                    }
-                    using StreamReader sr = new StreamReader(resp.Content.ReadAsStream());
-                    string data = sr.ReadToEnd();
-                    doc = new XmlDocument();
-                    doc.LoadXml(data);
-                }
-                return (Blueprint)_st.plug.DeserializeXml<Blueprint>(doc);
+                using Stream stream = uri == TcOpcodeProfile.BundledUri
+                    ? typeof(NetworkDecoder).Assembly.GetManifestResourceStream("Lemegeton.Resources.tc-blueprint.xml")
+                    : OpenBlueprintStream(uri);
+                if (stream == null)
+                    throw new FileNotFoundException("Bundled Taiwan opcode profile is missing.");
+                using XmlReader reader = XmlReader.Create(stream, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null });
+                return (Blueprint)new System.Xml.Serialization.XmlSerializer(typeof(Blueprint)).Deserialize(reader);
             }
             catch (Exception ex)
             {
-                _st.Log(State.LogLevelEnum.Error, ex, "Couldn't load retrieve blueprint from {0}", uri);
+                _st.Log(State.LogLevelEnum.Error, ex, "Couldn't retrieve TC blueprint from {0}", uri);
+                return null;
             }
-            return null;
         }
 
-        internal bool GetOpcodes(bool fallback)
+        private static Stream OpenBlueprintStream(string uri)
         {
-            try
+            Uri parsed = new Uri(uri);
+            if (parsed.IsFile)
+                return File.OpenRead(parsed.LocalPath);
+            if (parsed.Scheme != Uri.UriSchemeHttps)
+                throw new InvalidOperationException("Opcode profiles must use HTTPS or a local file URI.");
+            using HttpClient client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            return new MemoryStream(client.GetByteArrayAsync(parsed).GetAwaiter().GetResult(), false);
+        }
+
+        internal bool GetOpcodes()
+        {
+            lock (_profileLock)
             {
-                bool fromBackup = false;
-                _st.Log(State.LogLevelEnum.Debug, null, "Loading blueprint from {0}", _st.cfg.OpcodeUrl);
-                Blueprint bp = GetBlueprintFromURI(_st.cfg.OpcodeUrl);
-                if (bp == null && fallback == true)
+                Reset();
+                _blueprint = null;
+                _opcodeRegions.Clear();
+                string uri = _st.cfg.OpcodeUrl;
+                string region = _st.cfg.OpcodeRegion;
+                TcOpcodeProfile.MigrateDefaults(ref uri, ref region);
+                _st.cfg.OpcodeUrl = uri;
+                _st.cfg.OpcodeRegion = region;
+                try
                 {
-                    try
-                    {
-                        string temp = Path.GetTempPath();
-                        string tempfile = Path.Combine(temp, "lemegeton_blueprint.xml");
-                        _st.Log(State.LogLevelEnum.Debug, null, "Loading blueprint backup from {0}", tempfile);
-                        XmlDocument tempdoc = new XmlDocument();
-                        tempdoc.Load(tempfile);
-                        bp = (Blueprint)_st.plug.DeserializeXml<Blueprint>(tempdoc);
-                        _st.Log(State.LogLevelEnum.Debug, null, "Blueprint backup loaded");
-                        fromBackup = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        _st.Log(State.LogLevelEnum.Error, ex, "Couldn't load blueprint backup");
-                    }
-                }
-                if (bp != null)
-                {
-                    bp.BuildLookups();
-                    _blueprint = bp;
-                    if (fromBackup == false)
-                    {
-                        try
-                        {
-                            string temp = Path.GetTempPath();
-                            string tempfile = Path.Combine(temp, "lemegeton_blueprint.xml");
-                            XmlDocument tempdoc = _st.plug.SerializeXml<Blueprint>(bp);
-                            File.WriteAllText(tempfile, tempdoc.OuterXml);
-                            _st.Log(State.LogLevelEnum.Debug, null, "Blueprint backup saved to {0}", tempfile);
-                        }
-                        catch (Exception ex)
-                        {
-                            _st.Log(State.LogLevelEnum.Error, ex, "Couldn't save blueprint backup");
-                        }
-                    }
-                    _opcodeRegions = new List<string>(from ix in bp.RegionLookup select ix.Key);
+                    _st.Log(State.LogLevelEnum.Debug, null, "Loading TC blueprint from {0}", uri);
+                    Blueprint blueprint = GetBlueprintFromURI(uri);
+                    if (blueprint == null)
+                        return false;
+                    blueprint.BuildLookups();
+                    _blueprint = blueprint;
+                    _opcodeRegions = blueprint.RegionLookup.Keys.ToList();
                     return true;
                 }
-            }
-            catch (Exception ex)
-            {
-                _st.Log(State.LogLevelEnum.Error, ex, "Couldn't retrieve blueprint");
-            }
-            return false;
-        }
-
-        internal void SetOpcodeRegion(string name)
-        {
-            if (_blueprint.RegionLookup.ContainsKey(name) == true)
-            {
-                Blueprint.Region r = _blueprint.RegionLookup[name];
-                _st.Log(State.LogLevelEnum.Info, null, "Setting opcode region to {0} ({1})", r.Name, r.Version);
-                if (String.Compare(r.Version, _st.GameVersion) != 0)
+                catch (Exception ex)
                 {
-                    _st.Log(State.LogLevelEnum.Warning, null, "Opcode version {0} and game version {1} differ, things may be broken", r.Version, _st.GameVersion);
+                    _st.Log(State.LogLevelEnum.Error, ex, "Couldn't load TC opcode profiles");
+                    return false;
                 }
-                _nextOpcodeRegion = r;
-                return;
             }
-            string defName = "EN/DE/FR/JP";
-            if (_blueprint.RegionLookup.ContainsKey(defName) == true)
-            {
-                Blueprint.Region r = _blueprint.RegionLookup[defName];
-                _st.Log(State.LogLevelEnum.Warning, null, "Couldn't set opcode region to {0}, defaulting to {1} ({2})", name, r.Name, r.Version);
-                _nextOpcodeRegion = r;
-                return;
-            }
-            Blueprint.Region reg = _blueprint.Regions.First();
-            _st.Log(State.LogLevelEnum.Warning, null, "Couldn't set opcode region to {0}, defaulting to first found {1} ({2})", name, reg.Name, reg.Version);
-            _nextOpcodeRegion = reg;
         }
 
-        internal void NetworkMessageReceived(nint dataPtr, ushort opCode, uint sourceActorId, uint targetActorId, NetworkMessageDirection direction)
+        internal bool SetOpcodeRegion(string name)
+        {
+            lock (_profileLock)
+            {
+                Reset();
+                Blueprint.Region region = null;
+                _blueprint?.RegionLookup.TryGetValue(name ?? "", out region);
+                if (!TcOpcodeProfile.TryValidate(region, _st.GameVersion, out string error))
+                {
+                    _st.Log(State.LogLevelEnum.Error, null, "{0} Packet-dependent features are inactive.", error);
+                    return false;
+                }
+                SetOpcodes(region);
+                _currentOpcodeRegion = region;
+                _st.StatusGotOpcodes = true;
+                _st.Log(State.LogLevelEnum.Info, null, "Selected TC opcodes for {0}. EventPlay/64 are unsupported.", region.Version);
+                return true;
+            }
+        }
+
+        internal void NetworkMessageReceived(nint dataPtr, ushort opCode, uint sourceActorId, uint targetActorId,
+            NetworkMessageDirection direction, byte? obfuscationKey, int bodyLength)
         {
             if (direction != NetworkMessageDirection.ZoneDown)
-            {
-                _st.LastNetworkTrafficUp = DateTime.Now;
                 return;
-            }
             _st.LastNetworkTrafficDown = DateTime.Now;
-            if (_nextOpcodeRegion != null)
-            {                
-                SetOpcodes(_nextOpcodeRegion);
-                _currentOpcodeRegion = _nextOpcodeRegion;
-                _nextOpcodeRegion = null;
-            }
-            Decode(dataPtr, opCode, sourceActorId, targetActorId);
+            lock (_profileLock)
+                Decode(dataPtr, opCode, sourceActorId, targetActorId, obfuscationKey, bodyLength);
         }
 
         private void _tracker_OnStatusGain(uint srcActorId, uint actorId, uint statusId, float duration, int stacks)

@@ -1,0 +1,12 @@
+{
+  "Author": "Paissa Heavy Industries (TC port)",
+  "Name": "Lemegeton TC",
+  "InternalName": "Lemegeton",
+  "AssemblyVersion": "1.0.7.602",
+  "Description": "台服 Lemegeton (API 13)",
+  "Punchline": "台服 Lemegeton (API 13)",
+  "ApplicableVersion": "2026.11.05.0000.0000",
+  "DalamudApiLevel": 13,
+  "RepoUrl": "https://github.com/y1chu/Lemegeton-TC",
+  "Tags": ["副本", "台服", "自動標記"]
+}

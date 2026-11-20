@@ -323,7 +323,7 @@ namespace Lemegeton.Content
                                 Log(LogLevelEnum.Warning, null, "Actor for {0} is null, are they in a different zone?", kp.Key);
                                 continue;
                             }
-                            if (_state.cfg.AutomarkerSoft == true)
+                            if (_state.cfg.UseSoftmarkers == true)
                             {
                                 ret = true;
                                 currentSign = AutomarkerSigns.SignEnum.None;

@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Xml.Serialization;
 
 namespace Lemegeton.Core
@@ -95,10 +96,13 @@ namespace Lemegeton.Core
             RegionLookup.Clear();
             foreach (Region r in Regions)
             {
-                RegionLookup[r.Name] = r;
+                if (String.IsNullOrWhiteSpace(r.Name) || !RegionLookup.TryAdd(r.Name, r))
+                    throw new InvalidOperationException("Blueprint region names must be nonempty and unique.");
+                r.OpcodeLookup.Clear();
                 foreach (Region.Opcode o in r.Opcodes)
                 {
-                    r.OpcodeLookup[o.Name] = o;
+                    if (String.IsNullOrWhiteSpace(o.Name) || !r.OpcodeLookup.TryAdd(o.Name, o))
+                        throw new InvalidOperationException("Blueprint opcode names must be nonempty and unique.");
                 }
             }
         }

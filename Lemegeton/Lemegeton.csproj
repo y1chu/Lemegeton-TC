@@ -1,81 +1,43 @@
 <Project Sdk="Dalamud.NET.Sdk/13.0.0">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Version>1.0.7.602</Version>
+    <Nullable>annotations</Nullable>
     <Platforms>AnyCPU;x64</Platforms>
     <Configurations>Debug (Full);Release (Full);Debug (Mini);Release (Mini)</Configurations>
   </PropertyGroup>
   
   <PropertyGroup>
-    <DalamudLibPath>$(appdata)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
+    <DalamudLibPath Condition="'$(DALAMUD_HOME)' == ''">$(APPDATA)\FFXIVSimpleLauncher\Dalamud\Injector\</DalamudLibPath>
+    <TcDalamudLibPath>$([MSBuild]::EnsureTrailingSlash('$(DalamudLibPath)'))</TcDalamudLibPath>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   
-  <PropertyGroup Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))'">
-    <DalamudLibPath>$(DALAMUD_HOME)/</DalamudLibPath>
+  <PropertyGroup Condition="$([System.String]::Copy('$(Configuration)').StartsWith('Release'))">
+    <Optimize>true</Optimize>
   </PropertyGroup>
   
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Full)|AnyCPU'" />
-  
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Mini)|AnyCPU'">
-    <DefineConstants>$(DefineConstants);SANS_GOETIA</DefineConstants>
-  </PropertyGroup>
-  
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Full)|x64'" />
-  
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug (Full)|AnyCPU'" />
-  
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug (Mini)|AnyCPU'">
-    <DefineConstants>$(DefineConstants);SANS_GOETIA</DefineConstants>
-  </PropertyGroup>
-  
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug (Full)|x64'" />
-  
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug (Mini)|x64'">
-    <DefineConstants>$(DefineConstants);SANS_GOETIA</DefineConstants>
-  </PropertyGroup>
-  
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release (Mini)|x64'">
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug (Mini)' Or '$(Configuration)' == 'Release (Mini)'">
     <DefineConstants>$(DefineConstants);SANS_GOETIA</DefineConstants>
   </PropertyGroup>
   
   <ItemGroup>
-    <PackageReference Include="DalamudPackager" Version="13.0.0" />
+    <!-- SDK 13 supplies this reference list. Always resolve it from the same TC host. -->
+    <Reference Update="Dalamud;FFXIVClientStructs;InteropGenerator.Runtime;Newtonsoft.Json;Dalamud.Bindings.ImGui;Dalamud.Bindings.ImPlot;Dalamud.Bindings.ImGuizmo;ImGuiScene;Lumina;Lumina.Excel;Serilog">
+      <HintPath>$(TcDalamudLibPath)%(Identity).dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <None Include="Lemegeton.json" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Resources\tc-blueprint.xml" LogicalName="Lemegeton.Resources.tc-blueprint.xml" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Reference Include="Dalamud">
-      <HintPath>C:\Users\Moskau\AppData\Roaming\XIVLauncher\addon\Hooks\dev\Dalamud.dll</HintPath>
-	  <Private>false</Private>
-    </Reference>
-    <Reference Include="FFXIVClientStructs">
-      <HintPath>C:\Users\Moskau\AppData\Roaming\XIVLauncher\addon\Hooks\dev\FFXIVClientStructs.dll</HintPath>
-	  <Private>false</Private>
-    </Reference>
-    <Reference Include="InteropGenerator.Runtime">
-      <HintPath>C:\Users\Moskau\AppData\Roaming\XIVLauncher\addon\Hooks\dev\InteropGenerator.Runtime.dll</HintPath>
-	  <Private>false</Private>
-    </Reference>
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>$(DalamudLibPath)Newtonsoft.Json.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="ImGui.NET">
-      <HintPath>$(DalamudLibPath)ImGui.NET.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="ImGuiScene">
-      <HintPath>$(DalamudLibPath)ImGuiScene.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Lumina">
-      <HintPath>$(DalamudLibPath)Lumina.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Lumina.Excel">
-      <HintPath>$(DalamudLibPath)Lumina.Excel.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-  </ItemGroup>  
+  <Target Name="ValidateTcDalamud" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(TcDalamudLibPath)Dalamud.dll')" Text="Taiwan Dalamud not found at $(DalamudLibPath). Set DalamudLibPath or DALAMUD_HOME to the TC Injector directory." />
+    <GetAssemblyIdentity AssemblyFiles="$(TcDalamudLibPath)Dalamud.dll">
+      <Output TaskParameter="Assemblies" ItemName="_TcDalamudIdentity" />
+    </GetAssemblyIdentity>
+    <Error Condition="!$([System.String]::Copy('%(_TcDalamudIdentity.Version)').StartsWith('13.'))" Text="The TC port requires Dalamud API 13. Selected host: %(_TcDalamudIdentity.Version)." />
+  </Target>
 
 </Project>

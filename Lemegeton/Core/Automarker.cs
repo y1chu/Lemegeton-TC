@@ -4,13 +4,8 @@
     internal abstract class Automarker : ContentItem
     {
 
-        public override FeaturesEnum Features
-        {
-            get
-            {
-                return _state.cfg.AutomarkerSoft == false && AsSoftmarker == false ? FeaturesEnum.Automarker : FeaturesEnum.Drawing;
-            }
-        }
+        public override FeaturesEnum Features => _state.cfg.UseSoftmarkers || AsSoftmarker
+            ? FeaturesEnum.Drawing : FeaturesEnum.Automarker;
 
         [DebugOption]
         [AttributeOrderNumber(500)]

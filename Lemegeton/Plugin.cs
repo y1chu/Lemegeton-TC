@@ -55,11 +55,11 @@ namespace Lemegeton
     {
 
 #if !SANS_GOETIA
-        public string Name => "Lemegeton Goetia";
+        public string Name => "Lemegeton TC Goetia";
 #else
-        public string Name => "Lemegeton";
+        public string Name => "Lemegeton TC";
 #endif
-        public string Version = "1.0.7.6";
+        public string Version = typeof(Plugin).Assembly.GetName().Version.ToString();
 
         internal class Downloadable
         {
@@ -135,6 +135,8 @@ namespace Lemegeton
         private DateTime _loaded = DateTime.Now;
         private bool _aboutProg = false;
         private bool _softMarkerPreview = false;
+        private bool _sharedMarkerRiskAcknowledged = false;
+        private string _sharedMarkerUnlockText = "";
         private bool _timelineSelectorOpened = false;
         private DateTime _aboutOpened;
         private Dictionary<Delegate, string[]> _delDebugInput = new Dictionary<Delegate, string[]>();
@@ -979,7 +981,7 @@ namespace Lemegeton
         public void LoadConfig()
         {
             Log(State.LogLevelEnum.Info, "Loading configuration");
-            _state.cfg = _state.pi.GetPluginConfig() as Config ?? new Config();
+            _state.ApplyConfig(_state.pi.GetPluginConfig() as Config ?? new Config(), preserveProtection: _state.cfg != null);
             Log(State.LogLevelEnum.Info, "Configuration loaded");
         }
 
@@ -1847,11 +1849,15 @@ namespace Lemegeton
                 }
                 if (pi.PropertyType == typeof(bool))
                 {
-                    bool temp = (bool)pi.GetValue(cm);
+                    bool forcedLocal = _state.cfg.ForceSoftmarkers && cm is Automarker
+                        && pi.Name == nameof(Automarker.AsSoftmarker);
+                    bool temp = forcedLocal || (bool)pi.GetValue(cm);
+                    ImGui.BeginDisabled(forcedLocal);
                     if (ImGui.Checkbox(proptr, ref temp) == true)
                     {
                         pi.SetValue(cm, temp);
                     }
+                    ImGui.EndDisabled();
                 }
                 if (pi.PropertyType == typeof(string))
                 {
@@ -1965,7 +1971,10 @@ namespace Lemegeton
 
         internal string GetActionName(uint key)
         {
-            Lumina.Excel.Sheets.Action a = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.Action>().GetRow(key);
+            if (!_state.dm.Excel.GetSheet<Lumina.Excel.Sheets.Action>().TryGetRow(key, out var a))
+            {
+                return $"Action {key}";
+            }
             string name = Capitalize(a.Name.ExtractText());
             if (name.Contains("_rsv_") == true)
             {
@@ -1976,7 +1985,10 @@ namespace Lemegeton
 
         internal string GetStatusName(uint key)
         {
-            Lumina.Excel.Sheets.Status a = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.Status>().GetRow(key);
+            if (!_state.dm.Excel.GetSheet<Lumina.Excel.Sheets.Status>().TryGetRow(key, out var a))
+            {
+                return $"Status {key}";
+            }
             string name = Capitalize(a.Name.ExtractText());
             if (name.Contains("_rsv_") == true)
             {
@@ -2010,8 +2022,7 @@ namespace Lemegeton
                             List<string> temp = new List<string>();
                             foreach (uint key in e.KeyValues)
                             {
-                                Lumina.Excel.Sheets.BNpcName a = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.BNpcName>().GetRow(key);
-                                string name = Capitalize(a.Singular.ExtractText()) + " \xE0AF";
+                                string name = GetNpcName(key) + " \xE0AF";
                                 if (temp.Contains(name) == false)
                                 {
                                     temp.Add(name);
@@ -2049,8 +2060,7 @@ namespace Lemegeton
                 case Timeline.Entry.EntryTypeEnum.Spawn:
                     {
                         int index = (int)Math.Floor((DateTime.Now - _loaded).TotalSeconds / 2.0f) % e.KeyValues.Count;
-                        Lumina.Excel.Sheets.BNpcName a = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.BNpcName>().GetRow(e.KeyValues[index]);
-                        return Capitalize(a.Singular.ExtractText() + " \xE0AF");
+                        return GetNpcName(e.KeyValues[index]) + " \xE0AF";
                     }
                 case Timeline.Entry.EntryTypeEnum.Targettable:
                     return I18n.Translate("Timelines/SpecialTags/Targettable");
@@ -2064,16 +2074,26 @@ namespace Lemegeton
             return "???";
         }
 
+        private string GetNpcName(uint key)
+        {
+            return _state.dm.Excel.GetSheet<BNpcName>().TryGetRow(key, out var npc)
+                ? Capitalize(npc.Singular.ExtractText())
+                : $"NPC {key}";
+        }
+
         internal string GetInstanceNameForTerritory(ushort territory)
         {
-            TerritoryType tt = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.TerritoryType>().GetRow(territory);
-            ContentFinderCondition cfc = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.ContentFinderCondition>().Where(x => x.TerritoryType.IsValid == true && x.TerritoryType.Value.RowId == tt.RowId).FirstOrDefault();
-            if (cfc.RowId == tt.RowId)
+            if (!_state.dm.Excel.GetSheet<TerritoryType>().TryGetRow(territory, out var tt))
+            {
+                return $"Territory {territory}";
+            }
+            ContentFinderCondition cfc = _state.dm.Excel.GetSheet<ContentFinderCondition>()
+                .FirstOrDefault(x => x.TerritoryType.RowId == territory);
+            if (cfc.RowId != 0)
             {
                 return cfc.Name.ExtractText();
             }
-            PlaceName pn = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.PlaceName>().GetRow(tt.PlaceName.RowId);
-            if (pn.RowId == tt.PlaceName.RowId)
+            if (_state.dm.Excel.GetSheet<PlaceName>().TryGetRow(tt.PlaceName.RowId, out var pn))
             {
                 return pn.Name.ExtractText();
             }
@@ -4307,10 +4327,16 @@ namespace Lemegeton
                 ImGui.PushID("QuickToggles");
                 ImGui.Indent(30.0f);
                 ImGui.TextWrapped(I18n.Translate("MainMenu/Settings/QuickToggles/Info") + Environment.NewLine + Environment.NewLine);
-                bool qtAutomarker = _state.cfg.QuickToggleAutomarkers;
+                bool qtAutomarker = !_state.cfg.ForceSoftmarkers && _state.cfg.QuickToggleAutomarkers;
+                ImGui.BeginDisabled(_state.cfg.ForceSoftmarkers);
                 if (ImGui.Checkbox(I18n.Translate("MainMenu/Settings/QuickToggles/Automarkers"), ref qtAutomarker) == true)
                 {
                     _state.cfg.QuickToggleAutomarkers = qtAutomarker;
+                }
+                ImGui.EndDisabled();
+                if (_state.cfg.ForceSoftmarkers)
+                {
+                    ImGui.TextWrapped(I18n.Translate("MainMenu/Settings/DangerZone/LockedControls"));
                 }
                 bool qtOverlays = _state.cfg.QuickToggleOverlays;
                 if (ImGui.Checkbox(I18n.Translate("MainMenu/Settings/QuickToggles/Overlays"), ref qtOverlays) == true)
@@ -4417,16 +4443,18 @@ namespace Lemegeton
                 }
                 ImGui.Text(Environment.NewLine);
                 bool autoCmd = _state.cfg.AutomarkerCommands;
+                ImGui.BeginDisabled(_state.cfg.ForceSoftmarkers);
                 if (ImGui.Checkbox(I18n.Translate("MainMenu/Settings/AutomarkersCommands"), ref autoCmd) == true)
                 {
                     _state.cfg.AutomarkerCommands = autoCmd;
                 }
+                ImGui.EndDisabled();
                 bool debugLogMarkers = _state.cfg.DebugOnlyLogAutomarkers;
                 if (ImGui.Checkbox(I18n.Translate("MainMenu/Settings/DebugOnlyLogAutomarkers"), ref debugLogMarkers) == true)
                 {
                     _state.cfg.DebugOnlyLogAutomarkers = debugLogMarkers;
                 }
-                if (_state.cfg.AutomarkerSoft == true && _state.cfg.QuickToggleOverlays == false)
+                if (_state.cfg.UseSoftmarkers && _state.cfg.QuickToggleOverlays == false)
                 {
                     ImGui.TextWrapped(Environment.NewLine + I18n.Translate("MainMenu/Settings/AutomarkersSoftDesc") + Environment.NewLine);
                     float time = (float)((DateTime.Now - _loaded).TotalMilliseconds / 600.0);
@@ -4442,10 +4470,21 @@ namespace Lemegeton
                 {
                     ImGui.TextWrapped(Environment.NewLine + I18n.Translate("MainMenu/Settings/AutomarkersSoftDesc") + Environment.NewLine + Environment.NewLine);
                 }
-                bool autoSoft = _state.cfg.AutomarkerSoft;
+                bool autoSoft = _state.cfg.UseSoftmarkers;
+                ImGui.BeginDisabled(_state.cfg.ForceSoftmarkers);
                 if (ImGui.Checkbox(I18n.Translate("MainMenu/Settings/AutomarkersSoft"), ref autoSoft) == true)
                 {
                     _state.cfg.AutomarkerSoft = autoSoft;
+                }
+                ImGui.EndDisabled();
+                if (_state.cfg.ForceSoftmarkers)
+                {
+                    ImGui.TextWrapped(I18n.Translate("MainMenu/Settings/DangerZone/LockedControls"));
+                }
+                if (_state.cfg.UseSoftmarkers && !_state.cfg.QuickToggleOverlays
+                    && ImGui.Button(I18n.Translate("MainMenu/Settings/DangerZone/EnableDrawing")))
+                {
+                    _state.cfg.QuickToggleOverlays = true;
                 }
                 if (ImGui.CollapsingHeader(I18n.Translate("MainMenu/Settings/SoftmarkerSettings")) == true)
                 {
@@ -4731,7 +4770,8 @@ namespace Lemegeton
                         IPluginConfiguration imp = DeserializeConfigSnapshot(_configSnapshot);
                         if (imp != null)
                         {
-                            _state.cfg = (Config)imp;
+                            // Importing someone else's settings must not silently unlock shared markers.
+                            _state.ApplyConfig((Config)imp, preserveProtection: true);
                             Log(LogLevelEnum.Debug, "Config snapshot imported");
                         }
                         else
@@ -4771,6 +4811,60 @@ namespace Lemegeton
                 ImGui.Unindent(30.0f);
                 ImGui.PopID();
             }
+            RenderMarkerDangerZone();
+        }
+
+        private void RenderMarkerDangerZone()
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.35f, 0.3f, 1.0f));
+            bool expanded = ImGui.CollapsingHeader(I18n.Translate("MainMenu/Settings/DangerZone"));
+            ImGui.PopStyleColor();
+            if (!expanded)
+            {
+                _sharedMarkerRiskAcknowledged = false;
+                _sharedMarkerUnlockText = "";
+                return;
+            }
+
+            ImGui.PushID("MarkerDangerZone");
+            ImGui.Indent(30.0f);
+            if (_state.cfg.ForceSoftmarkers)
+            {
+                ImGui.TextWrapped(I18n.Translate("MainMenu/Settings/DangerZone/Locked"));
+                _ui.RenderWarning(I18n.Translate("MainMenu/Settings/DangerZone/Warning"));
+                ImGui.Checkbox(I18n.Translate("MainMenu/Settings/DangerZone/Acknowledge"), ref _sharedMarkerRiskAcknowledged);
+                ImGui.TextWrapped(I18n.Translate("MainMenu/Settings/DangerZone/TypeConfirmation"));
+                ImGui.InputText("##UnlockSharedMarkers", ref _sharedMarkerUnlockText, 64);
+                bool canUnlock = _sharedMarkerRiskAcknowledged
+                    && String.Equals(_sharedMarkerUnlockText, "ALLOW SHARED MARKERS", StringComparison.Ordinal);
+                ImGui.BeginDisabled(!canUnlock);
+                if (ImGui.Button(I18n.Translate("MainMenu/Settings/DangerZone/Unlock")))
+                {
+                    lock (_state.cfg.MarkerSafetySync)
+                    {
+                        _state.cfg.AutomarkerSoft = true;
+                        _state.cfg.ForceSoftmarkers = false;
+                    }
+                    _sharedMarkerRiskAcknowledged = false;
+                    _sharedMarkerUnlockText = "";
+                    SaveConfig();
+                }
+                ImGui.EndDisabled();
+                ImGui.TextWrapped(I18n.Translate("MainMenu/Settings/DangerZone/UnlockExplanation"));
+            }
+            else
+            {
+                _ui.RenderWarning(I18n.Translate("MainMenu/Settings/DangerZone/Unlocked"));
+                if (ImGui.Button(I18n.Translate("MainMenu/Settings/DangerZone/Relock")))
+                {
+                    _state.cfg.ForceSoftmarkers = true;
+                    _sharedMarkerRiskAcknowledged = false;
+                    _sharedMarkerUnlockText = "";
+                    SaveConfig();
+                }
+            }
+            ImGui.Unindent(30.0f);
+            ImGui.PopID();
         }
 
         private bool BeginAboutTab(bool forceOpen)
@@ -6036,7 +6130,6 @@ namespace Lemegeton
             wh[2] = p._downloadRequestEvent;
             wh[3] = p._retryEvent;
             int timeout = 0;
-            int tries = 0;
             bool ready = false;
             try
             {
@@ -6056,20 +6149,18 @@ namespace Lemegeton
                             Log(LogLevelEnum.Debug, "Going to reload opcodes");
                             _state.UnprepareInternals();
                             ready = false;
-                            tries = 0;
                             timeout = 0;
                             break;
                         case WaitHandle.WaitTimeout:
                             if (ready == false)
                             {
-                                if (_state.PrepareInternals(tries >= 5) == true)
+                                if (_state.PrepareInternals() == true)
                                 {
                                     ready = true;
                                 }
                                 else
                                 {
                                     timeout = 10000;
-                                    tries++;
                                 }
                             }
                             else

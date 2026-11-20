@@ -14,6 +14,18 @@ namespace Lemegeton.Language
 
         public English(State st) : base(st)
         {
+            AddEntry("MainMenu/Settings/DangerZone", "Danger Zone");
+            AddEntry("MainMenu/Settings/DangerZone/Locked", "Local-only protection is ON. Lemegeton uses local markers and cannot add or remove shared game markers.");
+            AddEntry("MainMenu/Settings/DangerZone/LockedControls", "Local markers are enforced. Shared markers can only be unlocked in Settings > Danger Zone.");
+            AddEntry("MainMenu/Settings/DangerZone/Warning", "Disabling this protection allows Lemegeton to change game markers visible to your entire party, including markers on other players.");
+            AddEntry("MainMenu/Settings/DangerZone/Acknowledge", "I understand that shared markers on other players can be changed.");
+            AddEntry("MainMenu/Settings/DangerZone/TypeConfirmation", "Type ALLOW SHARED MARKERS to disable local-only protection:");
+            AddEntry("MainMenu/Settings/DangerZone/Unlock", "Disable local-only protection");
+            AddEntry("MainMenu/Settings/DangerZone/UnlockExplanation", "Local-marker mode stays enabled after unlocking. Turn off Use local markers afterward if you want shared game markers.");
+            AddEntry("MainMenu/Settings/DangerZone/Unlocked", "Local-only protection is OFF. Lemegeton may add or remove shared game markers according to your marker settings.");
+            AddEntry("MainMenu/Settings/DangerZone/Relock", "Re-enable local-only protection");
+            AddEntry("MainMenu/Settings/DangerZone/EnableDrawing", "Enable drawing for local markers");
+            AddEntry("Command/AutomarkerSoft/Locked", "Lemegeton: Local-only protection is enabled. Shared markers must be unlocked in Settings > Danger Zone.");
             #region 1.0.7.6
             AddEntry("Changelog/1.0.7.6", " Performance improvements\n Fixed TEA Fate Calibration automarkers");
             #endregion

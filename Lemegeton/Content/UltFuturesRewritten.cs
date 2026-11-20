@@ -773,7 +773,7 @@ namespace Lemegeton.Content
                 }
                 if (gained == false)
                 {
-                    bool soft = _state.cfg.AutomarkerSoft == true || AsSoftmarker == true;
+                    bool soft = _state.cfg.UseSoftmarkers == true || AsSoftmarker == true;
                     _state.ClearMarkerOn(actor, soft == false, soft == true);
                     return;
                 }

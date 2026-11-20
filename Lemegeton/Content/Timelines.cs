@@ -259,8 +259,8 @@ namespace Lemegeton.Content
                     IBattleChara bc = (IBattleChara)go;
                     if ((_state.GetStatusFlags(bc) & Dalamud.Game.ClientState.Objects.Enums.StatusFlags.Hostile) != 0)
                     {
-                        Lumina.Excel.Sheets.Action a = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.Action>().GetRow(actionId);
-                        if (IgnoreAutoAttacks == true && a.ActionCategory.RowId == 1)
+                        bool hasAction = _state.dm.Excel.GetSheet<Lumina.Excel.Sheets.Action>().TryGetRow(actionId, out var a);
+                        if (IgnoreAutoAttacks == true && hasAction && a.ActionCategory.RowId == 1)
                         {
                             return;
                         }

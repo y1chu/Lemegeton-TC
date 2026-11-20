@@ -22,7 +22,7 @@ namespace Lemegeton.Core
         }
 
         public int Version { get; set; } = 0;
-        public string Language { get; set; } = "English";
+        public string Language { get; set; } = "繁體中文";
         public string PlogonVersion { get; set; } = "1.0.0.0";
         public bool Opened { get; set; } = true;
         public bool ShowShortcut { get; set; } = true;
@@ -30,13 +30,13 @@ namespace Lemegeton.Core
         public bool FirstRun { get; set; } = true;
         public bool AdvancedOptions { get; set; } = false;
 
-        public string OpcodeUrl { get; set; } = @"https://raw.githubusercontent.com/paissaheavyindustries/Resources/main/Blueprint/blueprint.xml";
-        public string OpcodeRegion { get; set; } = "EN/DE/FR/JP";
+        public string OpcodeUrl { get; set; } = TcOpcodeProfile.BundledUri;
+        public string OpcodeRegion { get; set; } = TcOpcodeProfile.RegionName;
         public bool LogUnhandledOpcodes { get; set; } = false;
         public bool QueueFramework { get; set; } = true;
 
         public bool QuickToggleAutomarkers { get; set; } = true;
-        public bool QuickToggleOverlays { get; set; } = false;
+        public bool QuickToggleOverlays { get; set; } = true;
         public bool QuickToggleSound { get; set; } = false;
 #if !SANS_GOETIA
         public bool QuickToggleHacks { get; set; } = false;
@@ -45,7 +45,32 @@ namespace Lemegeton.Core
 
         public bool NagAboutStreaming { get; set; } = true;
 
-        public bool AutomarkerSoft { get; set; } = false;
+        // Older configurations also default to local-only markers.
+        internal object MarkerSafetySync => MarkerSafetyPolicy.Sync;
+        private bool _forceSoftmarkers = true;
+        private long _sharedMarkerRevision;
+        internal long SharedMarkerRevision
+        {
+            get { lock (MarkerSafetySync) return _sharedMarkerRevision; }
+        }
+        public bool ForceSoftmarkers
+        {
+            get { lock (MarkerSafetySync) return _forceSoftmarkers; }
+            set
+            {
+                lock (MarkerSafetySync)
+                {
+                    if (_forceSoftmarkers != value)
+                    {
+                        _forceSoftmarkers = value;
+                        _sharedMarkerRevision++;
+                    }
+                }
+            }
+        }
+        public bool AutomarkerSoft { get; set; } = true;
+        [Newtonsoft.Json.JsonIgnore]
+        public bool UseSoftmarkers => ForceSoftmarkers || AutomarkerSoft;
         public bool AutomarkerCommands { get; set; } = false;
         public int AutomarkersServed { get; set; } = 0;
         public bool RemoveMarkersAfterCombatEnd { get; set; } = true;

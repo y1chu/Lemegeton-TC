@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Core: marzent/machina ac8489782570fa10338c1635f0ec061cbe72816e
+     Machina.FFXIV/Headers/Opcodes/TraditionalChinese.txt (hex to decimal).
+     MapEffect: OverlayPlugin/OverlayPlugin af064b3ecb64e1af516ac572dd0ebc9f5120e0e1
+     OverlayPlugin.Core/resources/opcodes.jsonc, TraditionalChinese 2026.11.05.
+     Exact-build mappings; encounter behavior still needs in-game validation. -->
+<Blueprint>
+  <Regions>
+    <Region Name="TC" Version="2026.11.05.0000.0000">
+      <Warnings>
+        <Warning Type="Information" Text="Taiwan client 2026.11.05.0000.0000. EventPlay and EventPlay64 are unavailable; features requiring those packets are unsupported." />
+      </Warnings>
+      <Opcodes>
+        <Opcode Name="StatusEffectList" Id="851" />
+        <Opcode Name="StatusEffectList2" Id="383" />
+        <Opcode Name="StatusEffectList3" Id="385" />
+        <Opcode Name="BossStatusEffectList" Id="669" />
+        <Opcode Name="Ability1" Id="872" />
+        <Opcode Name="Ability8" Id="335" />
+        <Opcode Name="Ability16" Id="175" />
+        <Opcode Name="Ability24" Id="619" />
+        <Opcode Name="Ability32" Id="186" />
+        <Opcode Name="ActorCast" Id="166" />
+        <Opcode Name="EffectResult" Id="994" />
+        <Opcode Name="ActorControl" Id="921" />
+        <Opcode Name="ActorControlSelf" Id="522" />
+        <Opcode Name="ActorControlTarget" Id="791" />
+        <Opcode Name="MapEffect" Id="106" />
+        <Opcode Name="EventPlay" Id="0" />
+        <Opcode Name="EventPlay64" Id="0" />
+      </Opcodes>
+    </Region>
+  </Regions>
+</Blueprint>

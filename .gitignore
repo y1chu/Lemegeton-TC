@@ -361,5 +361,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
-/Lemegeton/Lemegeton.json
 /Lemegeton/packages.lock.json
+
+# Local checks
+/tests/
+/test-tc.ps1
