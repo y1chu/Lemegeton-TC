@@ -4,6 +4,10 @@
 
 目前對應台服 `2026.11.05.0000.0000`，需要台服 Dalamud API 13。
 
+Repo Link:
+```
+https://raw.githubusercontent.com/k1miyama/DalamudPlugins/refs/heads/main/pluginmaster.json
+```
 ## 編譯
 
 先裝好 .NET 9 SDK 和台服 Dalamud，再到這個專案的資料夾，用 PowerShell 執行：
